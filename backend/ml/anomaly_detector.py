@@ -21,7 +21,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 from ..models.schemas import Alert, MetricPayload
-from ..core.rules_engine import evaluate as rule_evaluate  # Phase-1 fallback
+from ..core.rules_engine import _rule_evaluate as rule_evaluate  # Phase-1 fallback
 
 logger = logging.getLogger("anomaly_detector")
 
