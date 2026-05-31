@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pandas as pd
+from prophet import Prophet
 
 from ..models.schemas import MetricPayload
 
@@ -68,6 +70,8 @@ def load_prophet_dataset(metric: str = "cpu_percent"):
     except Exception as exc:
         logger.error("[predictive_monitor] pandas unavailable: %s", exc)
         raise RuntimeError(f"pandas is required for forecasting: {exc}") from exc
+def load_prophet_dataset(metric: str = "cpu_percent") -> pd.DataFrame:
+    """Load local metric history in Prophet's `ds`/`y` format."""
     if metric not in _FIELDNAMES:
         raise ValueError(f"Unsupported metric for forecasting: {metric}")
     if not METRICS_CSV_PATH.exists():
@@ -88,6 +92,7 @@ def load_prophet_dataset(metric: str = "cpu_percent"):
 
 
 def _untrained_forecast(df, threshold: float) -> dict[str, Any]:
+def _untrained_forecast(df: pd.DataFrame, threshold: float) -> dict[str, Any]:
     return {
         "trained": False,
         "history_points": int(len(df)),
@@ -114,6 +119,7 @@ def predict_cpu_next_24h(threshold: float = 90.0) -> dict[str, Any]:
             "message": str(exc),
         }
 
+    df = load_prophet_dataset("cpu_percent")
     if len(df) < _MIN_FORECAST_POINTS:
         return _untrained_forecast(df, threshold)
 
