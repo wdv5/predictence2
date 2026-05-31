@@ -1,4 +1,4 @@
-"""FastAPI application entry point for the Predictence backend."""
+"""backend/main.py — Phase 3: adds /metrics Prometheus endpoint."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -7,11 +7,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api.metrics import router as metrics_router
+from .core.metrics_exporter import metrics_router as prom_router
 
 app = FastAPI(
     title="Predictence Backend",
-    description="Predictive maintenance API with rule fallback, ML anomaly detection, and forecasting.",
-    version="2.0.0",
+    description=(
+        "Predictive maintenance API — rule fallback, ML anomaly detection, "
+        "Prophet forecasting, feedback-loop contamination tuning, and "
+        "Prometheus self-monitoring."
+    ),
+    version="3.0.0",
 )
 
 app.add_middleware(
@@ -22,16 +27,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# /metrics/… endpoints (ingest, simulate, status, alerts, predict, …)
 app.include_router(metrics_router, prefix="/metrics", tags=["metrics"])
+
+# /metrics  (bare, no prefix) — Prometheus scrape endpoint
+app.include_router(prom_router, tags=["observability"])
 
 
 @app.get("/health", tags=["health"])
-def health() -> dict[str, str]:
-    """Container healthcheck endpoint."""
+def health() -> dict:
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
 @app.get("/", tags=["health"])
-def root() -> dict[str, str]:
-    """Root endpoint for quick manual checks."""
-    return {"service": "predictence_backend", "status": "ok"}
+def root() -> dict:
+    return {"service": "predictence_backend", "version": "3.0.0", "status": "ok"}

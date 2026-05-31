@@ -1,17 +1,19 @@
 """
-Phase 2 — Isolation Forest anomaly detector.
+backend/ml/anomaly_detector.py  (Phase 3 — adaptive contamination)
+===================================================================
+Isolation Forest anomaly detector.
 
-Replaces the hard-coded threshold rules in rules_engine.py::evaluate().
-Trained incrementally on incoming metrics. Falls back to rule-based
-evaluation when not enough data has been collected yet.
-
-Public API (identical contract to Phase 1):
-    detector.score(payload) -> list[Alert]
+Phase 3 change: before every retrain the detector reads
+``label_store.contamination_estimate`` so operator feedback
+(resolved-alert labels) automatically tunes how aggressively the model
+flags anomalies.  Everything else — public API, scoring thresholds,
+rule fallback — is unchanged.
 """
 from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from collections import deque
 from datetime import datetime
 from typing import Optional
@@ -21,48 +23,43 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 from ..models.schemas import Alert, MetricPayload
-from ..core.rules_engine import _rule_evaluate as rule_evaluate  # Phase-1 fallback
+from ..core.rules_engine import _rule_evaluate as rule_evaluate
 
-logger = logging.getLogger("anomaly_detector")
+log = logging.getLogger("anomaly_detector")
 
-# --------------------------------------------------------------------------- #
-#  Hyper-parameters                                                             #
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+# Hyper-parameters
+# ---------------------------------------------------------------------------
 FEATURE_COLS = ["cpu_percent", "ram_percent", "latency_ms", "error_rate"]
 
-MIN_SAMPLES_TO_TRAIN = 50       # rows needed before IF kicks in
-RETRAIN_EVERY = 25              # retrain after this many new samples
-CONTAMINATION = 0.05            # expected fraction of anomalies (~5 %)
-N_ESTIMATORS = 200
-RANDOM_STATE = 42
-HISTORY_MAXLEN = 2_000          # rolling window kept in memory
+MIN_SAMPLES_TO_TRAIN    = 50
+RETRAIN_EVERY           = 25
+DEFAULT_CONTAMINATION   = 0.05   # used before label_store has enough data
+N_ESTIMATORS            = 200
+RANDOM_STATE            = 42
+HISTORY_MAXLEN          = 2_000
 
-
-# --------------------------------------------------------------------------- #
-#  Severity calibration (replaces hard-coded rule thresholds)                  #
-#  Score < sev_threshold  →  anomaly;  the more negative, the worse.           #
-# --------------------------------------------------------------------------- #
 CRITICAL_SCORE_THRESHOLD = -0.25
-WARNING_SCORE_THRESHOLD = -0.10
+WARNING_SCORE_THRESHOLD  = -0.10
 
 
 class _AnomalyDetector:
-    """Thread-safe, self-retraining Isolation Forest wrapper."""
+    """Thread-safe, self-retraining Isolation Forest with adaptive contamination."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock   = threading.Lock()
         self._history: deque[list[float]] = deque(maxlen=HISTORY_MAXLEN)
-        self._model: Optional[IsolationForest] = None
-        self._scaler: Optional[StandardScaler] = None
+        self._model:   Optional[IsolationForest] = None
+        self._scaler:  Optional[StandardScaler]  = None
         self._samples_since_last_train = 0
-        self._trained = False
+        self._trained  = False
+        self._last_contamination = DEFAULT_CONTAMINATION
 
     # ------------------------------------------------------------------ #
     #  Public                                                              #
     # ------------------------------------------------------------------ #
 
     def ingest(self, payload: MetricPayload) -> None:
-        """Add a new observation; retrain if the schedule says so."""
         row = self._payload_to_row(payload)
         with self._lock:
             self._history.append(row)
@@ -74,24 +71,17 @@ class _AnomalyDetector:
                 self._retrain_unlocked()
 
     def score(self, payload: MetricPayload) -> list[Alert]:
-        """
-        Return a list of Alerts — same contract as rules_engine.evaluate().
-        Falls back to rule-based logic when the model is not yet trained.
-        """
         with self._lock:
             trained = self._trained
-            model = self._model
-            scaler = self._scaler
+            model   = self._model
+            scaler  = self._scaler
 
         if not trained:
-            # Not enough data yet — defer to Phase-1 rules
-            logger.debug("[IF] not trained yet — using rule fallback")
             return rule_evaluate(payload)
 
-        row = np.array([self._payload_to_row(payload)], dtype=float)
-        row_scaled = scaler.transform(row)  # type: ignore[union-attr]
-        raw_score: float = float(model.score_samples(row_scaled)[0])  # type: ignore[union-attr]
-
+        row        = np.array([self._payload_to_row(payload)], dtype=float)
+        row_scaled = scaler.transform(row)          # type: ignore[union-attr]
+        raw_score  = float(model.score_samples(row_scaled)[0])  # type: ignore[union-attr]
         return self._build_alerts(payload, raw_score)
 
     @property
@@ -102,30 +92,46 @@ class _AnomalyDetector:
     def training_samples(self) -> int:
         return len(self._history)
 
+    @property
+    def current_contamination(self) -> float:
+        return self._last_contamination
+
     # ------------------------------------------------------------------ #
     #  Private                                                             #
     # ------------------------------------------------------------------ #
 
     def _retrain_unlocked(self) -> None:
         """Must be called while self._lock is held."""
-        data = np.array(list(self._history), dtype=float)
-        scaler = StandardScaler()
+        # --- Phase 3: pull live contamination from label store -----------
+        try:
+            from .label_store import store as label_store
+            contamination = label_store.contamination_estimate
+        except Exception:
+            contamination = DEFAULT_CONTAMINATION
+        # -----------------------------------------------------------------
+
+        data        = np.array(list(self._history), dtype=float)
+        scaler      = StandardScaler()
         data_scaled = scaler.fit_transform(data)
         model = IsolationForest(
             n_estimators=N_ESTIMATORS,
-            contamination=CONTAMINATION,
+            contamination=contamination,
             random_state=RANDOM_STATE,
             n_jobs=-1,
         )
         model.fit(data_scaled)
-        self._scaler = scaler
-        self._model = model
-        self._trained = True
+
+        self._scaler               = scaler
+        self._model                = model
+        self._trained              = True
+        self._last_contamination   = contamination
         self._samples_since_last_train = 0
-        logger.info(
-            "[IF] retrained on %d samples (contamination=%.2f)",
+
+        log.info(
+            "[IF] retrained on %d samples | contamination=%.4f (adaptive=%s)",
             len(data),
-            CONTAMINATION,
+            contamination,
+            contamination != DEFAULT_CONTAMINATION,
         )
 
     @staticmethod
@@ -133,77 +139,57 @@ class _AnomalyDetector:
         return [getattr(p, col) for col in FEATURE_COLS]
 
     def _build_alerts(self, payload: MetricPayload, score: float) -> list[Alert]:
-        """
-        Map the IF anomaly score to severity-labelled Alerts.
-
-        We still emit per-metric alerts (not a single "anomaly" alert)
-        so that downstream consumers (action layer, dashboard) need zero changes.
-        The anomaly score drives severity; per-metric deviation from the mean
-        determines which metrics to surface.
-        """
-        import uuid
-
         ts = payload.timestamp or datetime.utcnow()
 
         if score > WARNING_SCORE_THRESHOLD:
-            # Normal — no alerts
             return []
 
         severity = "CRITICAL" if score < CRITICAL_SCORE_THRESHOLD else "WARNING"
 
-        # Identify the *contributing* metrics using z-score from scaler mean
         with self._lock:
             if self._scaler is None:
                 return []
             means = self._scaler.mean_
-            stds = np.sqrt(self._scaler.var_)
+            stds  = np.sqrt(self._scaler.var_)
 
-        row = np.array(self._payload_to_row(payload), dtype=float)
+        row     = np.array(self._payload_to_row(payload), dtype=float)
         z_scores = np.abs((row - means) / (stds + 1e-9))
 
-        # Surface metrics whose z-score is in the top-2 contributors
         top_indices = np.argsort(z_scores)[::-1][:2]
-
         alerts: list[Alert] = []
+
         for idx in top_indices:
             if z_scores[idx] < 1.0:
-                # Only flag metrics that are genuinely unusual
                 continue
-            metric = FEATURE_COLS[idx]
-            value = float(row[idx])
-            mean_val = float(means[idx])
-            alerts.append(
-                Alert(
-                    id=str(uuid.uuid4()),
-                    severity=severity,
-                    metric=metric,
-                    value=value,
-                    threshold=float(mean_val),  # baseline mean acts as "threshold"
-                    message=(
-                        f"[ML] {metric}={value:.2f} is anomalous "
-                        f"(IF score={score:.3f}, z={z_scores[idx]:.1f}σ)"
-                    ),
-                    timestamp=ts,
-                )
-            )
+            metric    = FEATURE_COLS[idx]
+            value     = float(row[idx])
+            mean_val  = float(means[idx])
+            alerts.append(Alert(
+                id=str(uuid.uuid4()),
+                severity=severity,
+                metric=metric,
+                value=value,
+                threshold=mean_val,
+                message=(
+                    f"[ML] {metric}={value:.2f} anomalous "
+                    f"(IF score={score:.3f}, z={z_scores[idx]:.1f}σ)"
+                ),
+                timestamp=ts,
+            ))
 
-        # If no individual metric stood out but we still have an anomaly,
-        # emit a single aggregate alert
         if not alerts:
-            alerts.append(
-                Alert(
-                    id=str(uuid.uuid4()),
-                    severity=severity,
-                    metric="system",
-                    value=score,
-                    threshold=WARNING_SCORE_THRESHOLD,
-                    message=f"[ML] Multivariate anomaly detected (IF score={score:.3f})",
-                    timestamp=ts,
-                )
-            )
+            alerts.append(Alert(
+                id=str(uuid.uuid4()),
+                severity=severity,
+                metric="system",
+                value=score,
+                threshold=WARNING_SCORE_THRESHOLD,
+                message=f"[ML] Multivariate anomaly detected (IF score={score:.3f})",
+                timestamp=ts,
+            ))
 
         return alerts
 
 
-# Singleton — imported by rules_engine and metrics API
+# Singleton
 detector = _AnomalyDetector()
