@@ -1,0 +1,36 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: predictence
+
+# ── Scrape configurations ─────────────────────────────────────────────────────
+
+scrape_configs:
+
+  # Host metrics via Node Exporter
+  - job_name: node
+    static_configs:
+      - targets: ["node_exporter:9100"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: "([^:]+).*"
+        replacement: "${1}"
+
+  # Prometheus self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # FastAPI app (if you expose /metrics via prometheus-fastapi-instrumentator)
+  - job_name: fastapi
+    static_configs:
+      - targets: ["backend:8000"]
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+  # Add your own application exporters here:
+  # - job_name: my_app
+  #   static_configs:
+  #     - targets: ["my_app_host:8080"]

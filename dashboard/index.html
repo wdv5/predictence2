@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Predictive Maintenance Agent — Phase 2</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #08090c;
+    --surface: #0f1117;
+    --surface2: #151922;
+    --border: #1e2530;
+    --border2: #252d3a;
+    --text: #d4dce8;
+    --muted: #5c6a7e;
+    --dim: #3a4554;
+    --ok: #00c896;
+    --warn: #f5a623;
+    --crit: #ff4d6d;
+    --blue: #4d9fff;
+    --purple: #8b5cf6;
+    --cyan: #22d3ee;
+    --ml-active: #00c896;
+    --ml-warming: #f5a623;
+    --font-mono: 'IBM Plex Mono', 'Fira Code', monospace;
+    --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Grid scan-line texture ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(255,255,255,0.012) 2px,
+      rgba(255,255,255,0.012) 4px
+    );
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(8px);
+  }
+
+  .logo-group {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .logo-pulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 8px var(--ok);
+    animation: throb 2s ease-in-out infinite;
+  }
+
+  @keyframes throb {
+    0%,100% { opacity:1; box-shadow: 0 0 6px var(--ok); }
+    50%      { opacity:.4; box-shadow: 0 0 2px var(--ok); }
+  }
+
+  .phase-badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    padding: 3px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--purple);
+    color: var(--purple);
+    background: rgba(139,92,246,0.08);
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .conn-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .conn-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--ok);
+  }
+  .conn-dot.err { background: var(--crit); }
+
+  .status-badge {
+    padding: 4px 12px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    border: 1px solid;
+    transition: all .3s;
+  }
+
+  .status-OK       { color:var(--ok);   border-color:var(--ok);   background:rgba(0,200,150,.06);  }
+  .status-WARNING  { color:var(--warn); border-color:var(--warn); background:rgba(245,166,35,.06); }
+  .status-CRITICAL { color:var(--crit); border-color:var(--crit); background:rgba(255,77,109,.06);
+                     animation: blink 1s ease-in-out infinite; }
+
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* ── Layout ── */
+  main {
+    padding: 20px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4,1fr);
+    gap: 10px;
+  }
+
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 14px;
+  }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .card::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(255,255,255,.012) 0%, transparent 60%);
+    pointer-events: none;
+  }
+
+  /* ── Metric cards ── */
+  .metric-label {
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  .metric-value {
+    font-size: 30px;
+    font-weight: 700;
+    line-height: 1;
+    transition: color .3s;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .metric-unit {
+    font-size: 11px;
+    color: var(--muted);
+    margin-left: 3px;
+  }
+
+  .metric-bar {
+    margin-top: 12px;
+    height: 2px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .metric-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width .5s ease, background .3s;
+  }
+
+  /* ── Section title ── */
+  .card-title {
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .card-title-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  canvas { max-height: 190px; }
+
+  /* ── ML Status Panel ── */
+  .ml-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .ml-mode-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    border: 1px solid;
+  }
+
+  .ml-mode-if {
+    color: var(--ml-active);
+    border-color: var(--ml-active);
+    background: rgba(0,200,150,.06);
+  }
+
+  .ml-mode-rules {
+    color: var(--ml-warming);
+    border-color: var(--ml-warming);
+    background: rgba(245,166,35,.06);
+  }
+
+  .ml-progress-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .ml-progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .ml-progress-bar {
+    height: 4px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .ml-progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--purple), var(--cyan));
+    transition: width .6s ease;
+  }
+
+  .ml-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .ml-stat {
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 8px 10px;
+  }
+
+  .ml-stat-label {
+    font-size: 8px;
+    letter-spacing: 1.5px;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .ml-stat-value {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Alerts ── */
+  .alerts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+
+  .alerts-list::-webkit-scrollbar { width: 3px; }
+  .alerts-list::-webkit-scrollbar-track { background: transparent; }
+  .alerts-list::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .alert-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 9px;
+    border-radius: 3px;
+    border-left: 2px solid;
+    background: rgba(255,255,255,.018);
+    animation: slideIn .25s ease;
+  }
+
+  @keyframes slideIn {
+    from { opacity:0; transform:translateX(-6px); }
+    to   { opacity:1; transform:translateX(0); }
+  }
+
+  .alert-WARNING  { border-color: var(--warn); }
+  .alert-CRITICAL { border-color: var(--crit); background: rgba(255,77,109,.04); }
+
+  .alert-sev {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 2px 5px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  .sev-WARNING  { background:rgba(245,166,35,.15); color:var(--warn); }
+  .sev-CRITICAL { background:rgba(255,77,109,.15); color:var(--crit); }
+
+  .ml-tag {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    padding: 1px 4px;
+    border-radius: 2px;
+    background: rgba(139,92,246,.15);
+    color: var(--purple);
+    white-space: nowrap;
+  }
+
+  .alert-msg  { flex:1; color:var(--text); font-size: 11px; line-height: 1.4; }
+  .alert-time { color:var(--muted); font-size: 9px; white-space:nowrap; }
+
+  .empty-state {
+    text-align: center;
+    color: var(--dim);
+    padding: 28px;
+    font-size: 11px;
+    letter-spacing: .5px;
+  }
+
+  /* ── Controls ── */
+  .sim-controls {
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+
+  button {
+    padding: 5px 13px;
+    border-radius: 3px;
+    border: 1px solid var(--border2);
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    cursor: pointer;
+    letter-spacing: .5px;
+    transition: all .15s;
+  }
+
+  button:hover { background:rgba(255,255,255,.04); border-color:var(--blue); color:var(--blue); }
+  button.active { background:rgba(77,159,255,.08); border-color:var(--blue); color:var(--blue); }
+  button.danger:hover { border-color:var(--crit); color:var(--crit); background:rgba(255,77,109,.06); }
+  button.ml-btn:hover { border-color:var(--purple); color:var(--purple); background:rgba(139,92,246,.06); }
+
+  .last-sim {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 10px;
+    min-height: 14px;
+  }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 4px 0;
+  }
+
+  @media(max-width:1100px) {
+    .grid-4 { grid-template-columns:1fr 1fr; }
+    .grid-3, .grid-2 { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-group">
+    <div class="logo">
+      <div class="logo-pulse"></div>
+      Predictive Maintenance Agent
+    </div>
+    <span class="phase-badge">PHASE 2 · ML</span>
+  </div>
+  <div class="header-right">
+    <div class="conn-indicator">
+      <div class="conn-dot" id="conn-dot"></div>
+      <span id="conn-label">connecting…</span>
+    </div>
+    <div class="status-badge status-OK" id="status-badge">OK</div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Metric cards ─────────────────────────────────────── -->
+  <div class="grid-4">
+    <div class="card">
+      <div class="metric-label">CPU Usage</div>
+      <div><span class="metric-value" id="val-cpu">—</span><span class="metric-unit">%</span></div>
+      <div class="metric-bar"><div class="metric-bar-fill" id="bar-cpu" style="width:0%"></div></div>
+    </div>
+    <div class="card">
+      <div class="metric-label">RAM Usage</div>
+      <div><span class="metric-value" id="val-ram">—</span><span class="metric-unit">%</span></div>
+      <div class="metric-bar"><div class="metric-bar-fill" id="bar-ram" style="width:0%"></div></div>
+    </div>
+    <div class="card">
+      <div class="metric-label">Latency p95</div>
+      <div><span class="metric-value" id="val-lat">—</span><span class="metric-unit">ms</span></div>
+      <div class="metric-bar"><div class="metric-bar-fill" id="bar-lat" style="width:0%"></div></div>
+    </div>
+    <div class="card">
+      <div class="metric-label">Error Rate</div>
+      <div><span class="metric-value" id="val-err">—</span><span class="metric-unit">%</span></div>
+      <div class="metric-bar"><div class="metric-bar-fill" id="bar-err" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- ── Charts ───────────────────────────────────────────── -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">
+        <div class="card-title-left">CPU &amp; RAM History</div>
+        <span id="last-update" style="color:var(--muted);font-size:9px">—</span>
+      </div>
+      <canvas id="chart-cpu-ram"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-title">Latency &amp; Error Rate</div>
+      <canvas id="chart-lat-err"></canvas>
+    </div>
+  </div>
+
+  <!-- ── Controls + ML Status + Alerts ───────────────────── -->
+  <div class="grid-3">
+
+    <!-- Left column: controls + ML panel -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+
+      <div class="card">
+        <div class="card-title">Simulate Scenario</div>
+        <div class="sim-controls">
+          <button onclick="simulate('normal')">Normal</button>
+          <button onclick="simulate('cpu_spike')" class="danger">CPU Spike</button>
+          <button onclick="simulate('latency')" class="danger">Latency</button>
+          <button onclick="simulate('cascade')" class="danger">Cascade</button>
+          <button onclick="toggleAuto()" id="auto-btn">▶ Auto</button>
+          <button onclick="scrapePrometheus()" class="ml-btn">⬇ Scrape Prom</button>
+        </div>
+        <div class="last-sim" id="last-sim">No simulation yet</div>
+      </div>
+
+      <!-- ML Status -->
+      <div class="card">
+        <div class="card-title">
+          <div class="card-title-left">
+            Isolation Forest — Anomaly Detector
+          </div>
+          <span id="ml-refresh" style="color:var(--dim);font-size:9px;cursor:pointer" onclick="pollML()">↺ refresh</span>
+        </div>
+        <div class="ml-panel">
+          <div id="ml-mode-badge" class="ml-mode-badge ml-mode-rules">
+            ⏳ WARMING UP — RULE FALLBACK
+          </div>
+          <div class="ml-progress-wrap">
+            <div class="ml-progress-label">
+              <span>Training data</span>
+              <span id="ml-sample-label">0 / 50 samples</span>
+            </div>
+            <div class="ml-progress-bar">
+              <div class="ml-progress-fill" id="ml-progress" style="width:0%"></div>
+            </div>
+          </div>
+          <div class="ml-stats">
+            <div class="ml-stat">
+              <div class="ml-stat-label">Mode</div>
+              <div class="ml-stat-value" id="ml-mode-val">rules</div>
+            </div>
+            <div class="ml-stat">
+              <div class="ml-stat-label">Samples</div>
+              <div class="ml-stat-value" id="ml-samples-val">0</div>
+            </div>
+            <div class="ml-stat">
+              <div class="ml-stat-label">Contamination</div>
+              <div class="ml-stat-value">5%</div>
+            </div>
+            <div class="ml-stat">
+              <div class="ml-stat-label">Estimators</div>
+              <div class="ml-stat-value">200</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right column: alerts -->
+    <div class="card">
+      <div class="card-title">
+        <div class="card-title-left">Active Alerts</div>
+        <span id="alert-count" style="background:var(--surface2);border:1px solid var(--border2);padding:2px 8px;border-radius:10px;font-size:9px">0</span>
+      </div>
+      <div class="alerts-list" id="alerts-list">
+        <div class="empty-state">No alerts — system healthy</div>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<script>
+const API = 'http://localhost:8000';
+const MAX_POINTS = 50;
+let autoInterval = null;
+let autoRunning = false;
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+const chartBase = {
+  type: 'line',
+  options: {
+    responsive: true,
+    maintainAspectRatio: true,
+    animation: { duration: 250 },
+    plugins: {
+      legend: {
+        labels: {
+          color: '#5c6a7e',
+          font: { family: "'IBM Plex Mono', monospace", size: 10 },
+          boxWidth: 10,
+          padding: 10,
+        }
+      }
+    },
+    scales: {
+      x: { display: false },
+      y: {
+        ticks: { color: '#5c6a7e', font: { size: 9 } },
+        grid:  { color: 'rgba(30,37,48,0.8)' }
+      }
+    }
+  }
+};
+
+function makeChart(id, datasets, yMax) {
+  const ctx = document.getElementById(id).getContext('2d');
+  const cfg = JSON.parse(JSON.stringify(chartBase));
+  if (yMax) cfg.options.scales.y.max = yMax;
+  cfg.data = { labels: [], datasets };
+  return new Chart(ctx, cfg);
+}
+
+const cpuRamChart = makeChart('chart-cpu-ram', [
+  { label:'CPU %',  data:[], borderColor:'#4d9fff', backgroundColor:'rgba(77,159,255,.04)',
+    borderWidth:1.5, pointRadius:0, fill:true, tension:.4 },
+  { label:'RAM %',  data:[], borderColor:'#8b5cf6', backgroundColor:'rgba(139,92,246,.04)',
+    borderWidth:1.5, pointRadius:0, fill:true, tension:.4 },
+], 100);
+
+const latErrChart = makeChart('chart-lat-err', [
+  { label:'Latency ms', data:[], borderColor:'#f5a623', borderWidth:1.5, pointRadius:0, tension:.4, yAxisID:'y' },
+  { label:'Error %',    data:[], borderColor:'#ff4d6d', borderWidth:1.5, pointRadius:0, tension:.4, yAxisID:'y1' },
+]);
+latErrChart.options.scales.y1 = {
+  position:'right',
+  ticks:{ color:'#5c6a7e', font:{ size:9 } },
+  grid:{ drawOnChartArea:false }
+};
+
+function pushPoint(chart, values) {
+  const t = new Date().toLocaleTimeString('en',{hour12:false});
+  chart.data.labels.push(t);
+  values.forEach((v,i) => chart.data.datasets[i].data.push(v));
+  if (chart.data.labels.length > MAX_POINTS) {
+    chart.data.labels.shift();
+    chart.data.datasets.forEach(d => d.data.shift());
+  }
+  chart.update();
+}
+
+// ── Metric rendering ──────────────────────────────────────────────────────────
+function colorFor(v, warn, crit) {
+  return v >= crit ? 'var(--crit)' : v >= warn ? 'var(--warn)' : 'var(--ok)';
+}
+
+function setMetric(id, val, warn, crit, pct) {
+  const el  = document.getElementById('val-' + id);
+  const bar = document.getElementById('bar-' + id);
+  const c   = colorFor(val, warn, crit);
+  el.textContent = typeof val === 'number'
+    ? val.toFixed(id === 'lat' ? 0 : 1)
+    : '—';
+  el.style.color     = c;
+  bar.style.width    = Math.min(pct, 100) + '%';
+  bar.style.background = c;
+}
+
+// ── ML Status ─────────────────────────────────────────────────────────────────
+async function pollML() {
+  try {
+    const res = await fetch(API + '/metrics/ml/status');
+    if (!res.ok) return;
+    const d = await res.json();
+    const pct = Math.min(100, (d.training_samples / d.min_samples_needed) * 100);
+
+    document.getElementById('ml-progress').style.width = pct + '%';
+    document.getElementById('ml-sample-label').textContent =
+      `${d.training_samples} / ${d.min_samples_needed} samples`;
+    document.getElementById('ml-samples-val').textContent = d.training_samples;
+    document.getElementById('ml-mode-val').textContent    = d.mode;
+
+    const badge = document.getElementById('ml-mode-badge');
+    if (d.trained) {
+      badge.className = 'ml-mode-badge ml-mode-if';
+      badge.textContent = '✓ ISOLATION FOREST — ACTIVE';
+    } else {
+      badge.className = 'ml-mode-badge ml-mode-rules';
+      badge.textContent = '⏳ WARMING UP — RULE FALLBACK';
+    }
+  } catch(e) { /* silent */ }
+}
+
+// ── Alerts ────────────────────────────────────────────────────────────────────
+function renderAlerts(alerts) {
+  const list  = document.getElementById('alerts-list');
+  const count = document.getElementById('alert-count');
+  count.textContent = alerts.length;
+  if (!alerts.length) {
+    list.innerHTML = '<div class="empty-state">no alerts — system nominal</div>';
+    return;
+  }
+  list.innerHTML = alerts.slice(-20).reverse().map(a => {
+    const isML = a.message && a.message.startsWith('[ML]');
+    return `
+      <div class="alert-item alert-${a.severity}">
+        <span class="alert-sev sev-${a.severity}">${a.severity}</span>
+        ${isML ? '<span class="ml-tag">IF</span>' : ''}
+        <span class="alert-msg">${a.message}</span>
+        <span class="alert-time">${new Date(a.timestamp).toLocaleTimeString('en',{hour12:false})}</span>
+      </div>`;
+  }).join('');
+}
+
+// ── Status badge ──────────────────────────────────────────────────────────────
+function updateStatus(s) {
+  const b = document.getElementById('status-badge');
+  b.className = 'status-badge status-' + s;
+  b.textContent = s;
+}
+
+// ── Main poll ─────────────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const [statusRes, histRes] = await Promise.all([
+      fetch(API + '/metrics/status'),
+      fetch(API + '/metrics/history?limit=50'),
+    ]);
+    const status  = await statusRes.json();
+    const history = await histRes.json();
+
+    document.getElementById('conn-dot').className   = 'conn-dot';
+    document.getElementById('conn-label').textContent = 'live';
+    document.getElementById('last-update').textContent =
+      new Date().toLocaleTimeString('en',{hour12:false});
+
+    updateStatus(status.status);
+
+    if (status.latest_metrics) {
+      const m = status.latest_metrics;
+      setMetric('cpu', m.cpu_percent,  80,  90, m.cpu_percent);
+      setMetric('ram', m.ram_percent,  85,  95, m.ram_percent);
+      setMetric('lat', m.latency_ms,  500, 1000, m.latency_ms / 15);
+      setMetric('err', m.error_rate,    5,  10,  m.error_rate * 5);
+    }
+
+    if (history.length) {
+      const l = history[history.length - 1];
+      pushPoint(cpuRamChart, [l.cpu_percent, l.ram_percent]);
+      pushPoint(latErrChart,  [l.latency_ms, l.error_rate]);
+    }
+
+    renderAlerts(status.alerts || []);
+  } catch(e) {
+    document.getElementById('conn-dot').className   = 'conn-dot err';
+    document.getElementById('conn-label').textContent = 'disconnected';
+  }
+}
+
+// ── Simulation controls ───────────────────────────────────────────────────────
+async function simulate(scenario) {
+  const res  = await fetch(`${API}/metrics/simulate?scenario=${scenario}`);
+  const data = await res.json();
+  document.getElementById('last-sim').textContent =
+    `[${scenario}] → ${data.alerts_triggered} alert(s)`;
+  poll();
+  pollML();
+}
+
+async function scrapePrometheus() {
+  document.getElementById('last-sim').textContent = 'Scraping Prometheus…';
+  try {
+    const res  = await fetch(`${API}/metrics/scrape`);
+    const data = await res.json();
+    const src  = data.received?.source || '?';
+    document.getElementById('last-sim').textContent =
+      `[prometheus/${src}] → ${data.alerts_triggered} alert(s)`;
+    poll();
+    pollML();
+  } catch(e) {
+    document.getElementById('last-sim').textContent = 'Scrape failed — check PROMETHEUS_URL';
+  }
+}
+
+function toggleAuto() {
+  const btn = document.getElementById('auto-btn');
+  if (autoRunning) {
+    clearInterval(autoInterval);
+    autoRunning = false;
+    btn.textContent = '▶ Auto';
+    btn.classList.remove('active');
+  } else {
+    autoInterval = setInterval(() => simulate('random'), 2000);
+    autoRunning = true;
+    btn.textContent = '⏹ Stop';
+    btn.classList.add('active');
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+poll();
+pollML();
+setInterval(poll,   3000);
+setInterval(pollML, 5000);
+</script>
+</body>
+</html>
