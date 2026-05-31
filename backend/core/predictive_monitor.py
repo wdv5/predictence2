@@ -90,8 +90,6 @@ def load_prophet_dataset(metric: str = "cpu_percent") -> pd.DataFrame:
     out = out.dropna().sort_values("ds")
     return out.drop_duplicates(subset=["ds"], keep="last")
 
-
-def _untrained_forecast(df, threshold: float) -> dict[str, Any]:
 def _untrained_forecast(df: pd.DataFrame, threshold: float) -> dict[str, Any]:
     return {
         "trained": False,
