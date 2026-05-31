@@ -63,6 +63,13 @@ def persist_metric_row(payload: MetricPayload) -> None:
         )
 
 
+def load_prophet_dataset(metric: str = "cpu_percent"):
+    """Load local metric history in Prophet's `ds`/`y` format."""
+    try:
+        import pandas as pd
+    except Exception as exc:
+        logger.error("[predictive_monitor] pandas unavailable: %s", exc)
+        raise RuntimeError(f"pandas is required for forecasting: {exc}") from exc
 def load_prophet_dataset(metric: str = "cpu_percent") -> pd.DataFrame:
     """Load local metric history in Prophet's `ds`/`y` format."""
     if metric not in _FIELDNAMES:
@@ -84,6 +91,7 @@ def load_prophet_dataset(metric: str = "cpu_percent") -> pd.DataFrame:
     return out.drop_duplicates(subset=["ds"], keep="last")
 
 
+def _untrained_forecast(df, threshold: float) -> dict[str, Any]:
 def _untrained_forecast(df: pd.DataFrame, threshold: float) -> dict[str, Any]:
     return {
         "trained": False,
@@ -98,11 +106,26 @@ def _untrained_forecast(df: pd.DataFrame, threshold: float) -> dict[str, Any]:
 
 def predict_cpu_next_24h(threshold: float = 90.0) -> dict[str, Any]:
     """Forecast hourly CPU usage for the next 24 hours."""
+    try:
+        df = load_prophet_dataset("cpu_percent")
+    except RuntimeError as exc:
+        return {
+            "trained": False,
+            "history_points": 0,
+            "threshold": threshold,
+            "predictions": [],
+            "threshold_exceeded": False,
+            "first_breach": None,
+            "message": str(exc),
+        }
+
     df = load_prophet_dataset("cpu_percent")
     if len(df) < _MIN_FORECAST_POINTS:
         return _untrained_forecast(df, threshold)
 
     try:
+        from prophet import Prophet
+
         model = Prophet(daily_seasonality=True, weekly_seasonality=False, yearly_seasonality=False)
         model.fit(df)
         future = model.make_future_dataframe(periods=24, freq="h", include_history=False)

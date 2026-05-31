@@ -51,10 +51,20 @@ dashboard/
 
 ```bash
 # From the project root
-docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml up -d --build
 
 # Optional: with n8n
-docker compose -f docker/docker-compose.yml --profile n8n up -d
+docker compose -f docker/docker-compose.yml --profile n8n up -d --build
+```
+
+If the backend container keeps restarting with `Could not import module "backend.main"`
+after pulling code changes, rebuild the image so Docker does not reuse the old
+copy that lacked `backend/main.py`:
+
+```bash
+docker compose -f docker/docker-compose.yml down
+docker compose -f docker/docker-compose.yml build --no-cache backend
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 Services:

@@ -14,6 +14,9 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 COPY . /app/
 
+# Fail the image build early if the ASGI module cannot be imported.
+RUN python -c "import backend.main; print('backend.main import OK')"
+
 # Ensure data dir exists for Prophet CSV
 RUN mkdir -p /app/backend/data
 
