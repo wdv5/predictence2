@@ -127,7 +127,8 @@ curl http://localhost:8000/metrics/scrape | python -m json.tool
 Inspect the Isolation Forest model's training progress.
 
 ```bash
-curl http://localhost:8000/metrics/ml/status | python -m json.tool
+curl.exe http://localhost:8000/metrics/ml/status -o status.json
+py -m json.tool status.json
 ```
 
 Response:
